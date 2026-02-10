@@ -34,8 +34,10 @@ time_series_19-covid-Confirmed.csv
 time_series_19-covid-Deaths.csv
 time_series_19-covid-Recovered.csv
 
-## Note
+## Purpose
 
+I am seeking to start with the analysis presented in class and extend it a bit to an area of interest of mine, public health. I'm curious to see the affect of vaccination rates on COVID cases and deaths from when merged with the original Hopkins dataset.
+Note:
 This data appears to be cumulative and documentation is lacking. In my opinion, this is not best-practice because raw data should be the record or documentation should be clear anywhere the raw data has been altered.
 
 ## Load Libraries
@@ -266,7 +268,8 @@ ggplot(US_model, aes(x = cases)) +
 
 ```
 
-## Load a new dataset for vaccination rates in the USA to examine relationship between population vaccination rates and death rates. Vaccine eligable to all USA on 2021-04-19.
+## Load a new dataset for vaccination rates in the USA to examine relationship between population vaccination rates and death rates
+I wanted to see how vaccination rates affected the total deaths and case data, taken at the end of each period of record for each administrative area (i.e. unique FIPS ID). There is a rich dataset from the CDC with vaccination rates over the same areas of aggregation for the JHU dataset. Vaccine eligible to all USA on 2021-04-19.
 
 ```{r vacc_data_ingest, echo=TRUE, message=FALSE, warning=FALSE, results="hide"}
 
