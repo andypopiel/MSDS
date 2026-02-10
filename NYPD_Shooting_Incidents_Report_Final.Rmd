@@ -1,0 +1,245 @@
+---
+title: "NYPD Shooting Incidents Report - Seasonal and Hourly Patterns by Borough"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Description
+**NYPD Shooting Incident Data (Historic)** [Link to Dataset](https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic)  
+
+This is a breakdown of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year. This data is manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and includes information about the event, the location, and time of occurrence.
+
+## Load Libraries
+```{r load_libraries, message=FALSE, warning=FALSE}
+library(readr)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(ggpmisc)
+```
+
+## Import Data
+```{r import_data, message=FALSE, warning=FALSE}
+data_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+data <- readr::read_csv(data_url)
+```
+
+## Data Cleaning and Feature Engineering
+Remove geolocation data, format date & time, convert to factor data type for categorical cols, add a data frame for twlight by month for later comparison. Summarize.
+```{r clean_data}
+# Initial selection and formatting
+data <- data |>
+  dplyr::select(
+    INCIDENT_KEY, OCCUR_DATE, OCCUR_TIME, BORO, LOC_OF_OCCUR_DESC, 
+    PRECINCT, JURISDICTION_CODE, LOC_CLASSFCTN_DESC, LOCATION_DESC, 
+    STATISTICAL_MURDER_FLAG, PERP_AGE_GROUP, PERP_SEX, PERP_RACE, 
+    VIC_AGE_GROUP, VIC_SEX, VIC_RACE
+  ) |>
+  dplyr::mutate(
+    # Format Date & Time
+    OCCUR_DATE = lubridate::mdy(OCCUR_DATE),
+
+    occur_hour = hour(hms(OCCUR_TIME)),
+    occur_month = factor(month(OCCUR_DATE, label = TRUE, abbr = TRUE), 
+                         levels = month.abb, ordered = TRUE),  
+    # Convert to factor data type
+    across(c(BORO, LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, LOCATION_DESC, 
+             PERP_AGE_GROUP, PERP_SEX, PERP_RACE, VIC_AGE_GROUP, 
+             VIC_SEX, VIC_RACE), as.factor)
+  )
+
+# Define Civil Twilight Data for Reference Lines
+civil_twilight <- data.frame(
+  occur_month = factor(month.abb, levels = month.abb, ordered = TRUE),
+  civil_dawn = c(6.75, 6.35, 6.40, 5.79, 5.12, 4.86, 5.10, 5.62, 6.15, 6.67, 6.22, 6.68),
+  civil_dusk = c(17.40, 17.96, 19.28, 20.06, 20.62, 21.01, 20.92, 20.34, 19.51, 18.69, 17.12, 17.02)
+)
+# Summarize
+summary(data)
+```
+
+## Visualizations
+
+### 1. City-Wide: Shooting Incidents by Hour
+```{r hist_by_hour}
+ggplot(data, aes(x = occur_hour)) +
+  geom_histogram(binwidth = 1, boundary = 0, closed = "left", fill = "steelblue", color = "white") +
+  scale_x_continuous(breaks = 0:23, limits = c(0, 24)) +
+  labs(
+    title = "NYPD Shooting Incidents by Hour",
+    x = "Hours",
+    y = "Number of incidents"
+  ) +
+  theme_minimal()
+```
+
+This histogram shows a strong pattern between time of day and when shootings occur
+
+### 2. City-Wide: Seasonal and Hourly Patterns
+```{r combined_plot_city, fig.height=8, fig.width=10}
+# Filter valid records
+data_plot <- data |>
+  filter(!is.na(occur_month), !is.na(occur_hour))
+
+# Aggregate for NYC
+month_counts <- data_plot |> count(occur_month, name = "n")
+month_hour_counts <- data_plot |> count(occur_month, occur_hour, name = "n")
+
+# Monthly Incidents
+p_month <- ggplot(month_counts, aes(x = occur_month, y = n)) +
+  geom_col(fill = "gray30") +
+  labs(
+    title = "City-Wide Incident Patterns by Month (Top) and Hourly during that same month (Bottom)",
+    x = NULL,
+    y = "Incidents"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+# Bottom Plot: Heatmap
+p_month_hour <- ggplot(month_hour_counts, aes(x = occur_month, y = occur_hour)) +
+  geom_tile(aes(fill = n)) +
+  scale_fill_viridis_c(option = "magma", direction = 1) +
+  
+  # Add Twilight Lines
+  geom_line(data = civil_twilight, aes(y = civil_dawn, group = 1), color = "orange", linewidth = 1) +
+  geom_line(data = civil_twilight, aes(y = civil_dusk, group = 1), color = "dodgerblue", linewidth = 1) +
+  
+  scale_y_reverse(breaks = seq(0, 23, 6), limits = c(23, 0)) +
+  labs(x = "Month", y = "Hour", fill = "Count") +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+
+# Combine
+p_month / p_month_hour + plot_layout(heights = c(1, 2))
+```
+
+### 3. Borough Breakdown
+Analyze by Borough (`BORO`) for some locational context. 
+
+```{r combined_plot_boro, fig.height=10, fig.width=14}
+# 1. Aggregate by Borough
+# Fill missings with 0 so the heatmap has no empty gaps
+boro_month_counts <- data_plot |> 
+  count(BORO, occur_month, name = "n") |>
+  tidyr::complete(BORO, occur_month, fill = list(n = 0))
+
+boro_month_hour_counts <- data_plot |> 
+  count(BORO, occur_month, occur_hour, name = "n") |>
+  # This forces every Borough to have every Month and Hour
+  tidyr::complete(BORO, occur_month, occur_hour = 0:24, fill = list(n = 0))
+
+# 2. Top Plot: Monthly Bars Faceted by Boro
+p_boro_month <- ggplot(boro_month_counts, aes(x = occur_month, y = n)) +
+  geom_col(fill = "gray40") +
+  facet_wrap(~ BORO, nrow = 1) + 
+  labs(
+    title = "Seasonal Trends by Borough",
+    x = NULL,
+    y = "Incidents"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_blank(), 
+    axis.ticks.x = element_blank(),
+    strip.text = element_text(face = "bold", size = 10)
+  )
+
+# 3. Bottom Plot: Heatmap
+p_boro_hour <- ggplot(boro_month_hour_counts, aes(x = occur_month, y = occur_hour)) +
+  geom_tile(aes(fill = n)) +
+  
+  scale_fill_viridis_c(option = "magma", direction = 1) +
+  
+  # Add Twilight Lines
+  geom_line(data = civil_twilight, aes(y = civil_dawn, group = 1), color = "orange", linewidth = 0.8) +
+  geom_line(data = civil_twilight, aes(y = civil_dusk, group = 1), color = "dodgerblue", linewidth = 0.8) +
+  
+  scale_y_reverse(breaks = seq(0, 23, 6), limits = c(23, 0)) +
+  facet_wrap(~ BORO, nrow = 1) +
+  labs(
+    x = "Month",
+    y = "Hour",
+    fill = "Count"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+    strip.text = element_blank() 
+  )
+
+# Combine using patchwork
+p_boro_month / p_boro_hour + plot_layout(heights = c(1, 2))
+```
+
+### 4. Modeling: Hourly Trends by Borough and Month (Polynomial Fit)
+
+```{r trend_grid, echo=TRUE, fig.height=12, fig.width=16, message=FALSE, warning=FALSE}
+# 1. Prepare Data
+trend_data <- data |>
+  filter(!is.na(BORO), !is.na(occur_month), !is.na(occur_hour)) |>
+  count(BORO, occur_month, occur_hour, name = "n") |>
+  tidyr::complete(BORO, occur_month, occur_hour = 0:23, fill = list(n = 0))
+
+# 2. Plot
+ggplot(trend_data, aes(x = occur_hour, y = n)) +
+  # Scatter points
+  geom_point(alpha = 0.5, size = 2, color = "black") +
+  
+  # Polynomial Fit
+  geom_smooth(method = "lm", formula = y ~ poly(x, 3, raw = TRUE), 
+              color = "firebrick", fill = "firebrick", alpha = 0.2, linewidth = 0.8) +
+  
+
+  
+  # 3. display r-squared
+  stat_poly_eq(
+    formula = y ~ poly(x, 3, raw = TRUE), 
+    aes(label = ..rr.label..), 
+    parse = TRUE,
+    label.x.npc = "right", 
+    label.y.npc = 0.05,      # 5% up from the bottom
+    size = 5, color = "black"
+  ) +
+  
+  # Grid
+  facet_grid(BORO ~ occur_month) +
+  
+  # Formatting
+  scale_x_continuous(breaks = c(0, 6, 12, 18), labels = c("12a", "6a", "12p", "6p")) +
+  labs(
+    title = "Hourly Shooting Trends by Borough and Month",
+    subtitle = "Red line indicates 3rd-degree polynomial fit over raw hourly counts",
+    x = "Hour of Day",
+    y = "Incident Count"
+  ) +
+  
+  # Theme
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 14, angle = 90, vjust = 0.5),
+    axis.text.y = element_text(size = 14),
+    strip.background = element_rect(fill = "gray95"),
+    strip.text = element_text(size = 12, face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+This plot shows the daily pattern for every month in every borough. Using a 3rd-degree polynomial (the model) to visualize the general trend. Generally, R<sup>2</sup> is higher in higher-crime areas during higher-crime seasons. The modeling could be improved. For prediction purposes, a time series approach would probably perform better at showing the affect of changes over the year, this is an analysis of data from 2006-2024, which is a large range. Incidents per capita would show trends more clearly with places like Staten Island. The idea behind this analysis was simply to show that patterns can be modeled and could inform staffing levels. With more data, like staffing at the precinct level, we could examine how tightly staffing is associated with increased crime. I'm sure NYPD is well aware of these patterns and uses them for intelligent policing. How that influences this data is unknown to me. Real-world complexities like budgeting changes over time, pandemics, drug waves, etc. would probably also have an impact year-to-year. 
+
+
+### 5. Bias Examination
+
+The topic I chose is indeed biased, I am already aware that big-city crime often increases in the summer months. I was curious about how exactly that looks by time of day and location (borough as proxy for finer scale). I am not at all versed in criminology nor do I live in New York City. However sometimes this outsider's perspective can be valuable. Other than the bias that pertains to my experience, I don't think this analysis was skewed by any of my personal beliefs.
+
+### 6. Session Info
+```r
+```{r session-info, echo=TRUE}
+sessionInfo()

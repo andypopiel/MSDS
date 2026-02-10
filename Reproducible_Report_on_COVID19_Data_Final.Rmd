@@ -1,0 +1,531 @@
+---
+title: "Reproducible Report on COVID19 Data"
+date: "2026-02-09"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Instructions
+
+Import, tidy and analyze the COVID19 dataset from the Johns Hopkins Github site. This is the same dataset I used in class. Feel free to repeat and reuse what I did if you want to. Be sure your project is a reproducible .rmd document which your peers can download and knit. It should contain some visualization and  analysis that is unique to your project. You may use the data to do any analysis that is of interest to you. You should include at least two visualizations and one model.  Be sure to identify any bias possible in the data and in your analysis.
+
+## Data Description
+
+**csse_covid_19_time_series (Public Archive)** [Link to Dataset](https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series)  
+
+Time series summary (csse_covid_19_time_series)
+This folder contains daily time series summary tables, including confirmed, deaths and recovered. All data is read in from the daily case report. The time series tables are subject to be updated if inaccuracies are identified in our historical data.
+
+Two time series tables are for the US confirmed cases and deaths, reported at the county level. They are named time_series_covid19_confirmed_US.csv, time_series_covid19_deaths_US.csv, respectively.
+
+Three time series tables are for the global confirmed cases, recovered cases and deaths. Australia, Canada and China are reported at the province/state level. Dependencies of the Netherlands, the UK, France and Denmark are listed under the province/state level. The US and other countries are at the country level. The tables are renamed time_series_covid19_confirmed_global.csv and time_series_covid19_deaths_global.csv, and time_series_covid19_recovered_global.csv, respectively.
+
+Update frequency
+Once a day around 23:59 (UTC).
+Deprecated warning
+The files below were archived here, and will no longer be updated. With the release of the new data structure, we are updating our time series tables to reflect these changes. Please reference time_series_covid19_confirmed_global.csv and time_series_covid19_deaths_global.csv for the latest time series data.
+
+time_series_19-covid-Confirmed.csv
+time_series_19-covid-Deaths.csv
+time_series_19-covid-Recovered.csv
+
+## Note
+
+This data appears to be cumulative and documentation is lacking. In my opinion, this is not best-practice because raw data should be the record or documentation should be clear anywhere the raw data has been altered.
+
+## Load Libraries
+
+```{r load_libraries, message=FALSE, warning=FALSE}
+library(readr)
+library(stringr)
+library(tidyr)
+
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(ggpmisc)
+```
+
+## Import Data
+
+```{r import_data, message=FALSE, warning=FALSE}
+file_names <-
+  c("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv",
+    "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv",
+    "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv",
+    "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv"
+    )
+
+global_cases <- readr::read_csv(file_names[1])
+global_deaths <- readr::read_csv(file_names[2])
+US_cases <- readr::read_csv(file_names[3])
+US_deaths <- readr::read_csv(file_names[4])
+global_lookup <- readr::read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv")
+```
+
+## Clean Data (procedure taken from class)
+
+```{r clean_data, message=FALSE, warning=FALSE}
+
+global_cases <- global_cases %>%
+  pivot_longer(
+    cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+    names_to = "date",
+    values_to = "cases"
+  ) %>%
+  select(-c(Lat, Long))
+
+global_deaths <- global_deaths %>%
+  pivot_longer(
+    cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+    names_to = "date",
+    values_to = "deaths"
+  ) %>%
+  select(-c(Lat, Long))
+
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(
+    Country_Region = `Country/Region`,
+    Province_State = `Province/State`
+  ) %>%
+  mutate(date = mdy(date))
+
+global <- global %>%
+  unite(
+    "Combined_Key",
+    c(Province_State, Country_Region),
+    sep = ", ",
+    na.rm = TRUE,
+    remove = FALSE
+  )
+
+global <- global %>%
+  left_join(
+    global_lookup %>% select(-Combined_Key),
+    by = c("Province_State", "Country_Region")
+  ) %>%
+  select(-c(UID, FIPS)) %>%
+  select(
+    Province_State,
+    Country_Region,
+    date,
+    cases,
+    deaths,
+    Population,
+    Combined_Key
+  )
+
+global <- global %>% filter(cases > 0)
+
+US_cases <- US_cases %>%
+  pivot_longer(
+    cols = -(UID:Combined_Key),
+    names_to = "date",
+    values_to = "cases"
+  ) %>%
+  select(FIPS:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+US_deaths <- US_deaths %>%
+  pivot_longer(
+    cols = -(UID:Population),
+    names_to = "date",
+    values_to = "deaths"
+  ) %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+US <- US_cases %>%
+  full_join(US_deaths)
+
+US <- US %>% filter(cases > 0)
+
+```
+
+## Basic visualizations
+
+```{r basic_viz_data_ustotals, message=FALSE, warning=FALSE}
+US_total <- US %>%
+  group_by(date) %>%
+  summarise(
+    cases  = sum(cases, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(US_total, aes(x = date)) +
+  geom_line(aes(y = cases,  color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  labs(title = "US COVID-19 Totals Over Time", x = "Date", y = "Count", color = "Metric")
+
+
+```
+```{r basic_viz_data_ustotalslog, message=FALSE, warning=FALSE}
+ggplot(US_total, aes(x = date)) +
+  geom_line(aes(y = cases,  color = "Cases")) +
+  geom_line(aes(y = deaths, color = "Deaths")) +
+  scale_y_log10(labels = scales::comma) +
+  labs(
+    title = "US COVID-19 Cases and Deaths (Log Scale)",
+    x = "Date",
+    y = "Count (log scale)",
+    color = "Metric"
+  ) +
+  theme_minimal()
+
+
+```
+
+
+```{r basic_viz_data_globaltotals, message=FALSE, warning=FALSE}
+global_total <- global %>%
+  group_by(date) %>%
+  summarise(
+    cases  = sum(cases, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(global_total, aes(x = date)) +
+  geom_line(aes(y = cases,  color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  labs(title = "Global COVID-19 Totals Over Time", x = "Date", y = "Count", color = "Metric")
+
+```
+
+```{r basic_viz_data_globaltotalslog, message=FALSE, warning=FALSE}
+ggplot(global_total, aes(x = date)) +
+  geom_line(aes(y = cases,  color = "Cases")) +
+  geom_line(aes(y = deaths, color = "Deaths")) +
+  scale_y_log10(labels = scales::comma) +
+  labs(
+    title = "Global COVID-19 Cases and Deaths (Log Scale)",
+    x = "Date",
+    y = "Count (log scale)",
+    color = "Metric"
+  ) +
+  theme_minimal()
+
+```
+
+## Basic Model - Total Deaths Vs Cases by County in the USA
+
+```{r data_us_totals, message=FALSE, warning=FALSE}
+
+
+US_totals <- US %>%
+  group_by(Combined_Key) %>%
+  filter(date == max(date, na.rm = TRUE)) %>%
+  ungroup()
+
+US_totals <- US_totals %>%
+  mutate(
+    deaths_per_capita = deaths/Population,
+    cases_per_capita = cases/Population)
+
+```
+
+```{r basic_model, message=FALSE, warning=FALSE}
+
+US_model <- US_totals %>%
+  filter(
+    cases > 0,
+    deaths > 0,
+    is.finite(cases),
+    is.finite(deaths)
+  )
+
+
+mod <- lm(deaths ~ cases, data = US_model)
+summary(mod)
+
+US_model <- US_model %>%
+  mutate(pred = predict(mod))
+
+```
+```{r visualize_model, message=FALSE, warning=FALSE}
+
+ggplot(US_model, aes(x = cases)) +
+  geom_point(aes(y = deaths, color = "Data")) +
+  geom_point(aes(y = pred, color = "Model"))
+  labs(
+    x = "cases per capita",
+    y = "deaths per capita",
+    color = "Metric"
+  ) +
+  theme_minimal()
+
+```
+
+## Load a new dataset for vaccination rates in the USA to examine relationship between population vaccination rates and death rates. Vaccine eligable to all USA on 2021-04-19.
+
+```{r vacc_data_ingest, echo=TRUE, message=FALSE, warning=FALSE, results="hide"}
+
+library(data.table)
+
+cols <- c(
+  "date",
+  "fips",
+  "mmwr_week",
+  "recip_county",
+  "recip_state",
+  "completeness_pct",
+  "administered_dose1_pop_pct",
+  "series_complete_pop_pct"
+)
+
+base <- "https://data.cdc.gov/resource/8xkx-amqh.csv"
+
+select_clause <- paste(cols, collapse = ",")
+
+limit <- 50000
+offset <- 0
+
+out <- list()
+i <- 1
+
+repeat {
+  url <- sprintf("%s?$select=%s&$limit=%d&$offset=%d",
+                 base, select_clause, limit, offset)
+
+  chunk <- fread(url)
+  if (nrow(chunk) == 0) break
+
+  out[[i]] <- chunk
+  i <- i + 1
+  offset <- offset + limit
+}
+
+vacc <- rbindlist(out, use.names = TRUE, fill = TRUE)
+
+vacc[, date := as.IDate(date)]
+vacc[, fips := as.character(fips)]  # keep leading zeros
+
+```
+## Prep to Join Vaccination Data and Case/Death Data
+
+```{r data_merge_prep, echo=TRUE, message=FALSE, warning=FALSE, results="hide"}
+
+US_totals <- US_totals %>%
+  mutate(
+    fips = sprintf("%05s", as.character(FIPS)),
+    date = as.Date(date)
+  )
+
+US_totals <- US_totals %>% filter(!is.na(fips), fips != "00000")
+
+vacc <- vacc %>%
+  mutate(
+    fips = sprintf("%05s", as.character(fips)),
+    date = as.Date(date)
+  )
+
+vacc <- vacc %>%
+  mutate(
+    fips = sprintf("%05s", as.character(fips)),
+    date = as.Date(date)
+  )
+
+vacc <- vacc %>%
+  mutate(
+    fips = trimws(toupper(as.character(fips)))
+  ) %>%
+  filter(
+    !is.na(fips),
+    fips != "00000",
+    fips != "UNK"
+  )
+
+```
+
+## Join Vaccination Data and Case/Death Data
+
+```{r data_merge, echo=TRUE, message=FALSE, warning=FALSE, results="hide"}
+
+library(data.table)
+
+L <- as.data.table(US_totals)
+R <- as.data.table(vacc)
+
+setkey(L, fips, date)
+setkey(R, fips, date)
+
+US_vacc <- R[L, roll = TRUE]  # find right dataframe dates that match closest to left
+
+US_vacc <- US_vacc %>%
+  filter(
+    !is.na(series_complete_pop_pct),
+    !is.na(administered_dose1_pop_pct),
+    !is.na(deaths_per_capita),
+    !is.na(cases_per_capita))
+
+```
+
+## Deaths per Capita Compared to Population Percentage which Recieved 1 Vaccine Dose
+
+```{r model_viz_1, echo=TRUE, message=FALSE, warning=FALSE, results="hide"}
+mod_1d_deaths <- lm(deaths_per_capita ~ administered_dose1_pop_pct, data = US_vacc)
+summary(mod_1d_deaths)
+r2_1d_deaths <- summary(mod_1d_deaths)$r.squared
+r2_1d_deaths_lab <- paste0("R² = ", round(r2_1d_deaths, 3))
+
+US_vacc <- US_vacc %>%
+  mutate(pred_1d_deaths = predict(mod_1d_deaths))
+
+ggplot(
+  US_vacc,
+  aes(x = administered_dose1_pop_pct)
+) +
+  geom_point(aes(y = deaths_per_capita, color = "Cases"), alpha = 0.3) +
+  geom_point(aes(y = pred_1d_deaths, color = "Prediction"), alpha = 0.3) +
+  labs(
+    title = "COVID-19 Deaths vs First Dose Coverage",
+    x = "Population with 1st Dose (%)",
+    y = "Deaths per capita",
+    color = "Legend"
+  ) +
+    annotate(
+    "text",
+    x = Inf,
+    y = Inf,
+    label = r2_1d_deaths_lab,
+    hjust = 1.1,
+    vjust = 1.5
+  ) +
+  theme_minimal()
+
+```
+
+## Deaths per Capita Compared to Population Percentage which Recieved a Full Course of Vaccine Doses
+
+```{r model_viz_2, echo=FALSE, message=FALSE, warning=FALSE, results="hide"}
+mod_md_deaths <- lm(deaths_per_capita ~ series_complete_pop_pct, data = US_vacc)
+summary(mod_md_deaths)
+r2_md_deaths <- summary(mod_md_deaths)$r.squared
+r2_md_deaths_lab <- paste0("R² = ", round(r2_md_deaths, 3))
+
+US_vacc <- US_vacc %>%
+  mutate(pred_md_deaths = predict(mod_md_deaths))
+
+ggplot(
+  US_vacc,
+  aes(x = series_complete_pop_pct)
+) +
+  geom_point(aes(y = deaths_per_capita, color = "Cases"), alpha = 0.3) +
+  geom_point(aes(y = pred_md_deaths, color = "Prediction"), alpha = 0.3) +
+  labs(
+    title = "COVID-19 Deaths vs Complete Series Dose Coverage",
+    x = "Population with Complete Series Doses (%)",
+    y = "Deaths per capita",
+    color = "Legend"
+  ) +
+    annotate(
+    "text",
+    x = Inf,
+    y = Inf,
+    label = r2_md_deaths_lab,
+    hjust = 1.1,
+    vjust = 1.5
+  ) +
+  theme_minimal()
+
+```
+
+## Cases per Capita Compared to Population Percentage which Recieved 1 Vaccine Dose
+
+```{r model_viz_3, echo=FALSE, message=FALSE, warning=FALSE, results="hide"}
+mod_1d_cases <- lm(cases_per_capita ~ administered_dose1_pop_pct, data = US_vacc)
+summary(mod_1d_cases)
+r2_1d_cases <- summary(mod_1d_cases)$r.squared
+r2_1d_cases_lab <- paste0("R² = ", round(r2_1d_cases, 3))
+
+US_vacc <- US_vacc %>%
+  mutate(pred_1d_cases = predict(mod_1d_cases))
+
+ggplot(
+  US_vacc %>%
+    filter(
+      cases_per_capita < 1.5
+    ),
+  aes(x = administered_dose1_pop_pct)
+) +
+  geom_point(aes(y = cases_per_capita, color = "Cases"), alpha = 0.3) +
+  geom_point(aes(y = pred_1d_cases, color = "Prediction"), alpha = 0.3) +
+  labs(
+    title = "COVID-19 Cases vs First Dose Coverage",
+    x = "Population with 1st Dose (%)",
+    y = "Cases per capita",
+    color = "Legend"
+  ) +
+    annotate(
+    "text",
+    x = Inf,
+    y = Inf,
+    label = r2_1d_cases_lab,
+    hjust = 1.1,
+    vjust = 1.5
+  ) +
+  theme_minimal()
+
+```
+
+## Cases per Capita Compared to Population Percentage which Recieved a Full Course of Vaccine Doses
+
+```{r model_viz_4, echo=FALSE, message=FALSE, warning=FALSE, results="hide"}
+mod_md_cases <- lm(cases_per_capita ~ series_complete_pop_pct, data = US_vacc)
+summary(mod_md_cases)
+r2_md_cases <- summary(mod_md_cases)$r.squared
+r2_md_cases_lab <- paste0("R² = ", round(r2_md_cases, 3))
+
+US_vacc <- US_vacc %>%
+  mutate(pred_md_cases = predict(mod_md_cases))
+
+ggplot(
+  US_vacc %>%
+    filter(
+      cases_per_capita < 1.5
+    ),
+  aes(x = series_complete_pop_pct)
+) +
+  geom_point(aes(y = cases_per_capita, color = "Cases"), alpha = 0.3) +
+  geom_point(aes(y = pred_md_cases, color = "Prediction"), alpha = 0.3) +
+  labs(
+    title = "COVID-19 Cases vs Complete Series Dose Coverage",
+    x = "Population with Complete Series Doses (%)",
+    y = "Cases per capita",
+    color = "Legend"
+  ) +
+    annotate(
+    "text",
+    x = Inf,
+    y = Inf,
+    label = r2_md_cases_lab,
+    hjust = 1.1,
+    vjust = 1.5
+  ) +
+  theme_minimal()
+
+```
+
+## Analysis and Modeling Conclusions
+
+It appears that there is a clear relationship between COVID-19 vaccination and deaths per capita. Even one dose of the COVID-19 vaccine appears to make death less likely. This effect is much less clear in case data. That said, neither dataset was filtered beyond the basics necessary to model and display. Also dates from the vaccine and case/death datasets where merged at closest date, so there is probably data that are not matched in a chronologically rigorous manner. This was a quick analysis and I didn't examine confounding variables or seek to establish statistical significance.
+
+## Bias Assessment
+
+I have an interest in the benefits of public health which led me to examine the COVID-19 vaccine rates with case and death rates. It could be said that my bias led me analyze this topic. The analysis and model was pretty straightforward, but I suppose more rigorous statistical analysis could be warranted. I am not an expert in public health so that also means my analysis may be too simplistic for the conclusion I'm drawing, which is that vaccination helps to prevent death from COVID-19.
+
+## Session Info
+
+```r
+```{r session-info, echo=TRUE}
+sessionInfo()
